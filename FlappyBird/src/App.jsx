@@ -1,23 +1,29 @@
 import styled from "styled-components";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 
 const BIRD_HEIGHT = 28;
 const BIRD_WIDTH = 33;
 const WALL_HEIGHT = 600;
 const WALL_WIDTH = 400;
-const GRAVITY = 15;
+// Physics tuned to feel like original Flappy Bird (velocity + gravity)
+const GRAVITY_PX_PER_S2 = 2400;
+const JUMP_VELOCITY_PX_PER_S = -710;
+const MAX_FALL_SPEED_PX_PER_S = 950;
 const OBJ_WIDTH = 52;
-const OBJ_SPEED = 6;
+// (Legacy) OBJ_SPEED used to be px per 24ms tick; we now express speeds in px/second.
 const OBJ_GAP = 200;
+// Legacy constant kept for reference; jump is now velocity-based.
 const JUMP_STRENGTH = 97;
 
 const DIFFICULTY_SETTINGS = {
-  Easy: { speed: 4, gap: 250 },
-  Medium: { speed: 6, gap: 200 },
-  Hard: { speed: 8, gap: 170 },
-  Hell: { speed: 12, gap: 120 },
-  Classic: { speed: 5, gap: 200 },
-  Asian: { speed: 16, gap: 100 },
+  // speed: px/second
+  Easy: { speed: 120, gap: 230 },
+  Medium: { speed: 150, gap: 200 },
+  Hard: { speed: 180, gap: 180 },
+  Hell: { speed: 230, gap: 140 },
+  // Closest to the original feel
+  Classic: { speed: 140, gap: 170 },
+  Asian: { speed: 260, gap: 120 },
 };
 
 function App() {
@@ -32,7 +38,23 @@ function App() {
   const [difficulty, setDifficulty] = useState("Medium");
   const [scale, setScale] = useState(1);
 
+  const scoreRef = useRef(score);
+  const difficultyRef = useRef(difficulty);
+  const settingsRef = useRef(DIFFICULTY_SETTINGS[difficulty]);
+  const birdVelRef = useRef(0);
+  const rafIdRef = useRef(null);
+  const lastTimeRef = useRef(null);
+
   const currentSettings = DIFFICULTY_SETTINGS[difficulty];
+
+  useEffect(() => {
+    scoreRef.current = score;
+  }, [score]);
+
+  useEffect(() => {
+    difficultyRef.current = difficulty;
+    settingsRef.current = DIFFICULTY_SETTINGS[difficulty];
+  }, [difficulty]);
 
   // Handle resizing for responsive game container
   useEffect(() => {
@@ -59,44 +81,69 @@ function App() {
   }, []);
 
   useEffect(() => {
-    let intVal;
-    if (isStart && birdpos < WALL_HEIGHT - BIRD_HEIGHT) {
-      intVal = setInterval(() => {
-        setBirspos((birdpos) => birdpos + GRAVITY);
-      }, 24);
+    if (!isStart) {
+      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+      lastTimeRef.current = null;
+      birdVelRef.current = 0;
+      return;
     }
-    return () => clearInterval(intVal);
-  });
 
-  useEffect(() => {
-    let objval;
-    if (isStart && objPos >= -OBJ_WIDTH) {
-      objval = setInterval(() => {
-        let speed = currentSettings.speed;
-        if (difficulty === "Classic") {
-          speed += Math.floor(score / 10);
+    const loop = (time) => {
+      if (lastTimeRef.current == null) lastTimeRef.current = time;
+      const dtMs = Math.min(100, time - lastTimeRef.current);
+      lastTimeRef.current = time;
+      const dtSec = dtMs / 1000;
+
+      // Bird physics: v += g*dt, y += v*dt
+      setBirspos((prev) => {
+        let v = birdVelRef.current;
+        v = Math.min(v + GRAVITY_PX_PER_S2 * dtSec, MAX_FALL_SPEED_PX_PER_S);
+        let next = prev + v * dtSec;
+
+        if (next < 0) {
+          next = 0;
+          v = 0;
         }
-        setObjPos((objPos) => objPos - speed);
-      }, 24);
 
-      return () => {
-        clearInterval(objval);
-      };
-    } else {
-      setObjPos(WALL_WIDTH);
-      setObjHeight(
-        Math.floor(Math.random() * (WALL_HEIGHT - currentSettings.gap)),
-      );
-      if (isStart) setScore((score) => score + 1);
-    }
-  }, [
-    isStart,
-    objPos,
-    currentSettings.speed,
-    currentSettings.gap,
-    difficulty,
-    score,
-  ]);
+        if (next > WALL_HEIGHT - BIRD_HEIGHT) {
+          next = WALL_HEIGHT - BIRD_HEIGHT;
+          v = 0;
+        }
+
+        birdVelRef.current = v;
+        return next;
+      });
+
+      // Pipes movement (scaled by real elapsed time)
+      setObjPos((prev) => {
+        const settings = settingsRef.current;
+        let speed = settings.speed;
+        if (difficultyRef.current === "Classic") {
+          speed += Math.floor(scoreRef.current / 10) * 10;
+        }
+
+        const next = prev - speed * dtSec;
+        if (next < -OBJ_WIDTH) {
+          setObjHeight(
+            Math.floor(Math.random() * (WALL_HEIGHT - settings.gap)),
+          );
+          setScore((s) => s + 1);
+          return WALL_WIDTH;
+        }
+        return next;
+      });
+
+      rafIdRef.current = requestAnimationFrame(loop);
+    };
+
+    rafIdRef.current = requestAnimationFrame(loop);
+    return () => {
+      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+      lastTimeRef.current = null;
+    };
+  }, [isStart]);
 
   useEffect(() => {
     let topObj = birdpos >= 0 && birdpos < objHeight;
@@ -130,13 +177,28 @@ function App() {
     bestScore,
   ]);
 
-  const jump = () => {
-    if (!isStart) {
-      setIsStart(true);
-      setScore(0);
-    } else if (birdpos < BIRD_HEIGHT) setBirspos(0);
-    else setBirspos((birdpos) => birdpos - JUMP_STRENGTH);
-  };
+  const jump = useCallback(() => {
+    setIsStart((started) => {
+      if (!started) {
+        setScore(0);
+        // Ensure pipes start from a consistent position on new run
+        setObjPos(WALL_WIDTH);
+        setObjHeight(
+          Math.floor(
+            Math.random() *
+              (WALL_HEIGHT - DIFFICULTY_SETTINGS[difficultyRef.current].gap),
+          ),
+        );
+        setBirspos(300);
+        birdVelRef.current = 0;
+        return true;
+      }
+      return true;
+    });
+
+    // Original-like flap: set upward velocity impulse
+    birdVelRef.current = JUMP_VELOCITY_PX_PER_S;
+  }, []);
 
   const handler = () => {
     jump();
@@ -146,14 +208,14 @@ function App() {
   useEffect(() => {
     const handleKeyPress = (e) => {
       if (e.code === "Space" || e.code === "ArrowUp") {
-        e.preventDefault(); // Prevent scrolling
+        e.preventDefault();
         jump();
       }
     };
 
     window.addEventListener("keydown", handleKeyPress);
     return () => window.removeEventListener("keydown", handleKeyPress);
-  }, [isStart, birdpos]); // Dependencies required for closure to access latest state if not using functional updates completely (here jump logic depends on state)
+  }, [jump]);
 
   const handleDifficultyChange = (e, level) => {
     e.stopPropagation(); // Prevent game from starting when clicking buttons
@@ -376,7 +438,9 @@ const Bird = styled.div`
   height: ${(props) => props.height}px;
   top: ${(props) => props.top}px;
   left: ${(props) => props.left}px;
-  transition: top 0.05s linear;
+  /* Avoid smoothing; we want immediate, arcade-like response */
+  transition: none;
+  will-change: top;
 `;
 
 const Obj = styled.div`
