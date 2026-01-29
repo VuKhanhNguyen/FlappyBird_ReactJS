@@ -9,7 +9,7 @@ const GRAVITY = 15;
 const OBJ_WIDTH = 52;
 const OBJ_SPEED = 6;
 const OBJ_GAP = 200;
-const JUMP_STRENGTH = 92;
+const JUMP_STRENGTH = 97;
 
 const DIFFICULTY_SETTINGS = {
   Easy: { speed: 4, gap: 250 },
