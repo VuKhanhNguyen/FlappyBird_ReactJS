@@ -1,5 +1,5 @@
 <p align="center">
-	<img src="FlappyBird/public/images/background-day.png" alt="Flappy Bird - Background" width="720" />
+	<img src="FlappyBird/public/images/image.png" alt="Flappy Bird - Background" width="720" />
 </p>
 
 <h1 align="center">Flappy Bird (ReactJS)</h1>
